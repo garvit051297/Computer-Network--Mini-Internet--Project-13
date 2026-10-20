@@ -1,0 +1,105 @@
+
+{
+  "nodes": {
+    "H1": {
+      "virtual_ip": "10.0.0.1",
+      "udp_port": 5001,
+      "type": "host",
+      "default_gateway": "R_A"
+    },
+    "R_A": {
+      "virtual_ip": "10.0.0.2",
+      "udp_port": 5002,
+      "type": "router"
+    },
+    "R_B": {
+      "virtual_ip": "10.0.0.3",
+      "udp_port": 5003,
+      "type": "router"
+    },
+    "R_C": {
+      "virtual_ip": "10.0.0.4",
+      "udp_port": 5004,
+      "type": "router"
+    },
+    "R_D": {
+      "virtual_ip": "10.0.0.5",
+      "udp_port": 5005,
+      "type": "router"
+    },
+    "H2": {
+      "virtual_ip": "10.0.0.6",
+      "udp_port": 5006,
+      "type": "host",
+      "default_gateway": "R_D"
+    }
+  },
+  "links": [
+    {
+      "from": "H1",
+      "to": "R_A",
+      "delay_ms": 5,
+      "loss_prob": 0.0
+    },
+    {
+      "from": "R_A",
+      "to": "R_B",
+      "delay_ms": 5,
+      "loss_prob": 0.0
+    },
+    {
+      "from": "R_A",
+      "to": "R_C",
+      "delay_ms": 5,
+      "loss_prob": 0.0
+    },
+    {
+      "from": "R_B",
+      "to": "R_D",
+      "delay_ms": 5,
+      "loss_prob": 0.0
+    },
+    {
+      "from": "R_C",
+      "to": "R_D",
+      "delay_ms": 5,
+      "loss_prob": 0.0
+    },
+    {
+      "from": "R_D",
+      "to": "H2",
+      "delay_ms": 5,
+      "loss_prob": 0.0
+    }
+  ],
+  "forwarding_tables": {
+    "R_A": {
+      "10.0.0.1": "H1",
+      "10.0.0.3": "R_B",
+      "10.0.0.4": "R_C",
+      "10.0.0.5": "R_B",
+      "10.0.0.6": "R_B"
+    },
+    "R_B": {
+      "10.0.0.1": "R_A",
+      "10.0.0.2": "R_A",
+      "10.0.0.4": "R_D",
+      "10.0.0.5": "R_D",
+      "10.0.0.6": "R_D"
+    },
+    "R_C": {
+      "10.0.0.1": "R_A",
+      "10.0.0.2": "R_A",
+      "10.0.0.3": "R_A",
+      "10.0.0.5": "R_D",
+      "10.0.0.6": "R_D"
+    },
+    "R_D": {
+      "10.0.0.1": "R_B",
+      "10.0.0.2": "R_B",
+      "10.0.0.3": "R_B",
+      "10.0.0.4": "R_C",
+      "10.0.0.6": "H2"
+    }
+  }
+}

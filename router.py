@@ -2,8 +2,10 @@
 import json
 import logging
 import os
+import random
 import socket
 import sys
+import threading
 import uuid
 from datetime import datetime, timezone
 
@@ -27,17 +29,43 @@ def load_config():
             raise ValueError(f"Missing '{key}' in {CONFIG_FILE}")
 
     for name, node in config["nodes"].items():
-        if not isinstance(node.get("udp_port"), int):
+        port = node.get("udp_port")
+        if isinstance(port, bool) or not isinstance(port, int):
             raise ValueError(f"Invalid UDP port for {name}")
-        if not 1 <= node["udp_port"] <= 65535:
+        if not 1 <= port <= 65535:
             raise ValueError(f"UDP port out of range for {name}")
         if not node.get("virtual_ip"):
             raise ValueError(f"Missing virtual IP for {name}")
 
+    for index, link in enumerate(config["links"]):
+        if not isinstance(link, dict):
+            raise ValueError(f"Link {index} must be an object")
+
+        delay_ms = link.get("delay_ms", 0)
+        loss_prob = link.get("loss_prob", 0.0)
+
+        if (
+            isinstance(delay_ms, bool)
+            or not isinstance(delay_ms, (int, float))
+            or delay_ms < 0
+        ):
+            raise ValueError(
+                f"Invalid delay_ms on link {index}; it must be non-negative"
+            )
+
+        if (
+            isinstance(loss_prob, bool)
+            or not isinstance(loss_prob, (int, float))
+            or not 0.0 <= loss_prob <= 1.0
+        ):
+            raise ValueError(
+                f"Invalid loss_prob on link {index}; use a value from 0 to 1"
+            )
+
     return config
 
 
-def setup_logger(router_name, run_id):
+def setup_logger(router_name, run_id, seed=None):
     """Write router events to both the terminal and a log file."""
     os.makedirs("logs", exist_ok=True)
 
@@ -64,6 +92,7 @@ def setup_logger(router_name, run_id):
         "run_id": run_id,
         "device": router_name,
         "event": "START",
+        "seed": seed,
         "message": f"{router_name} starting"
     }))
 
@@ -91,7 +120,24 @@ def is_neighbor(config, router_name, neighbor_name):
     return False
 
 
-def run_router(router_name):
+def get_link_settings(config, node_a, node_b):
+    """Return delay and loss settings for a link in either direction."""
+    for link in config["links"]:
+        endpoints = {link.get("from"), link.get("to")}
+        if endpoints == {node_a, node_b}:
+            return (
+                link.get("delay_ms", 0),
+                link.get("loss_prob", 0.0)
+            )
+
+    raise ValueError(f"No configured link between {node_a} and {node_b}")
+
+
+def run_router(router_name, seed=None):
+    """Run a router, optionally using a reproducible random seed."""
+    if seed is not None:
+        random.seed(seed)
+
     config = load_config()
     nodes = config["nodes"]
 
@@ -109,19 +155,14 @@ def run_router(router_name):
     router_port = router["udp_port"]
     forwarding_table = config["forwarding_tables"][router_name]
 
-    # Map virtual IP addresses to node names.
-    ip_to_name = {
-        node["virtual_ip"]: name
-        for name, node in nodes.items()
-    }
-
     run_id = str(uuid.uuid4())
-    logger = setup_logger(router_name, run_id)
+    logger = setup_logger(router_name, run_id, seed=seed)
 
     log_event(
         logger, run_id, router_name, "LISTEN",
         virtual_ip=router_ip,
-        udp_endpoint=f"127.0.0.1:{router_port}"
+        udp_endpoint=f"127.0.0.1:{router_port}",
+        seed=seed
     )
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -209,6 +250,33 @@ def run_router(router_name):
                 )
                 continue
 
+            # Read the settings for this specific link.
+            try:
+                delay_ms, loss_prob = get_link_settings(
+                    config, router_name, next_hop
+                )
+            except ValueError as error:
+                log_event(
+                    logger, run_id, router_name, "DROP",
+                    reason="link_settings_error",
+                    error=str(error),
+                    next_hop=next_hop,
+                    **common
+                )
+                continue
+
+            # Simulate packet loss according to the configured probability.
+            if random.random() < loss_prob:
+                log_event(
+                    logger, run_id, router_name, "DROP",
+                    reason="simulated_link_loss",
+                    next_hop=next_hop,
+                    delay_ms=delay_ms,
+                    loss_prob=loss_prob,
+                    **common
+                )
+                continue
+
             # Resolve the neighbor's configured UDP endpoint.
             neighbor = nodes[next_hop]
             next_endpoint = ("127.0.0.1", neighbor["udp_port"])
@@ -232,31 +300,73 @@ def run_router(router_name):
                 )
                 continue
 
-            sock.sendto(outgoing, next_endpoint)
-
-            log_event(
-                logger, run_id, router_name, "FORWARD",
-                msg_id=msg_id,
-                msg_type=msg_type,
+            # Schedule the send so the router can keep receiving packets.
+            def forward_packet(
+                outgoing=outgoing,
+                next_endpoint=next_endpoint,
+                next_hop=next_hop,
+                delay_ms=delay_ms,
+                loss_prob=loss_prob,
                 src_ip=src_ip,
                 dst_ip=dst_ip,
-                incoming_hop_limit=hop_limit,
-                outgoing_hop_limit=hop_limit - 1,
-                next_hop=next_hop,
-                udp_destination=(
-                    f"{next_endpoint[0]}:{next_endpoint[1]}"
+                msg_id=msg_id,
+                msg_type=msg_type,
+                hop_limit=hop_limit
+            ):
+                try:
+                    sock.sendto(outgoing, next_endpoint)
+
+                    log_event(
+                        logger, run_id, router_name, "FORWARD",
+                        msg_id=msg_id,
+                        msg_type=msg_type,
+                        src_ip=src_ip,
+                        dst_ip=dst_ip,
+                        incoming_hop_limit=hop_limit,
+                        outgoing_hop_limit=hop_limit - 1,
+                        next_hop=next_hop,
+                        udp_destination=(
+                            f"{next_endpoint[0]}:{next_endpoint[1]}"
+                        ),
+                        delay_ms=delay_ms,
+                        loss_prob=loss_prob
+                    )
+                except OSError as error:
+                    log_event(
+                        logger, run_id, router_name, "DROP",
+                        reason="send_error",
+                        error=str(error),
+                        next_hop=next_hop,
+                        delay_ms=delay_ms,
+                        loss_prob=loss_prob,
+                        msg_id=msg_id,
+                        msg_type=msg_type,
+                        src_ip=src_ip,
+                        dst_ip=dst_ip
+                    )
+
+            if delay_ms > 0:
+                timer = threading.Timer(
+                    delay_ms / 1000.0,
+                    forward_packet
                 )
-            )
+                timer.daemon = True
+                timer.start()
+            else:
+                forward_packet()
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python router.py ROUTER_NAME")
-        print("Example: python router.py R_A")
+    if len(sys.argv) not in (2, 4) or (
+        len(sys.argv) == 4 and sys.argv[2] != "--seed"
+    ):
+        print("Usage: python router.py ROUTER_NAME [--seed INTEGER]")
+        print("Example: python router.py R_A --seed 101")
         sys.exit(1)
 
     try:
-        run_router(sys.argv[1])
+        seed = int(sys.argv[3]) if len(sys.argv) == 4 else None
+        run_router(sys.argv[1], seed=seed)
     except KeyboardInterrupt:
         print("\nRouter stopped.")
     except (RuntimeError, ValueError, OSError) as error:
