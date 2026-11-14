@@ -1,0 +1,8 @@
+{"timestamp": "2026-11-08T03:53:36.558005+00:00", "device": "H1", "event": "LISTEN", "virtual_ip": "10.0.0.1", "udp_endpoint": "127.0.0.1:5001", "default_gateway": "R_A", "mode": "reliable-send"}
+{"timestamp": "2026-11-08T03:53:36.570887+00:00", "device": "H1", "event": "TRANSFER_START", "transfer_id": "26e932be135d41d4ae05301b147c7a64", "destination_ip": "10.0.0.6", "message_count": 1, "ack_timeout_seconds": 0.5, "max_retries": 5}
+{"timestamp": "2026-11-08T03:53:36.572790+00:00", "device": "H1", "event": "SEND_DATA", "transfer_id": "26e932be135d41d4ae05301b147c7a64", "seq": 0, "msg_id": 1516922229, "attempt": 1, "retransmission": false, "is_last": true}
+{"timestamp": "2026-11-08T03:53:37.079597+00:00", "device": "H1", "event": "ACK_TIMEOUT", "transfer_id": "26e932be135d41d4ae05301b147c7a64", "seq": 0, "msg_id": 1516922229, "attempt": 1}
+{"timestamp": "2026-11-08T03:53:37.091440+00:00", "device": "H1", "event": "SEND_DATA", "transfer_id": "26e932be135d41d4ae05301b147c7a64", "seq": 0, "msg_id": 1516922229, "attempt": 2, "retransmission": true, "is_last": true}
+{"timestamp": "2026-11-08T03:53:37.190770+00:00", "device": "H1", "event": "ACK_RECEIVED", "transfer_id": "26e932be135d41d4ae05301b147c7a64", "seq": 0, "msg_id": 1516922229, "udp_source": "127.0.0.1:5002"}
+{"timestamp": "2026-11-08T03:53:37.191875+00:00", "device": "H1", "event": "TRANSFER_COMPLETE", "transfer_id": "26e932be135d41d4ae05301b147c7a64", "message_count": 1, "retransmissions": 1, "elapsed_seconds": 0.620971}
+{"timestamp": "2026-11-08T03:53:37.192882+00:00", "device": "H1", "event": "RELIABLE_SEND_SUCCESS", "transfer_id": "26e932be135d41d4ae05301b147c7a64", "message_count": 1, "retransmissions": 1}

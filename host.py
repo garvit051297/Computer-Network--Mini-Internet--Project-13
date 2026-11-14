@@ -6,12 +6,17 @@ import time
 from datetime import datetime, timezone
 
 from packet import encode_packet, decode_packet, MAX_PACKET_SIZE
+from reliable_transfer import (
+    run_reliable_sender,
+    run_reliable_receiver,
+)
 
 
 CONFIG_FILE = "config.json"
 RECEIVE_BUFFER_SIZE = MAX_PACKET_SIZE + 1
 DEFAULT_HOP_LIMIT = 10
 PROBE_TIMEOUT_SECONDS = 8.0
+LATE_RESPONSE_GRACE_SECONDS = 2.0
 
 
 def log_event(host_name, event, **details):
@@ -68,7 +73,8 @@ def get_gateway(config, host_name):
     return gateway_name, gateway
 
 
-def run_host(host_name):
+def run_host(host_name, mode="baseline", messages=None):
+    """Start a host in baseline or reliable-transfer mode."""
     config = load_config()
     nodes = config["nodes"]
 
@@ -88,7 +94,6 @@ def run_host(host_name):
     gateway_port = gateway["udp_port"]
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        # Bind to this host's configured UDP endpoint.
         sock.bind(("127.0.0.1", host_port))
 
         log_event(
@@ -96,23 +101,80 @@ def run_host(host_name):
             "LISTEN",
             virtual_ip=host_ip,
             udp_endpoint=f"127.0.0.1:{host_port}",
-            default_gateway=gateway_name
+            default_gateway=gateway_name,
+            mode=mode,
         )
 
-        if host_name == "H2":
-            run_echo_server(
-                sock, host_name, host_ip, gateway_name,
-                gateway_ip, gateway_port
+        if mode == "baseline":
+            if host_name == "H2":
+                run_echo_server(
+                    sock, host_name, host_ip, gateway_name,
+                    gateway_ip, gateway_port
+                )
+            elif host_name == "H1":
+                run_probe_client(
+                    sock, host_name, host_ip, gateway_name,
+                    gateway_ip, gateway_port
+                )
+            else:
+                raise ValueError(
+                    f"No host application behavior defined for {host_name}"
+                )
+
+        elif mode == "reliable-receive":
+            if host_name != "H2":
+                raise ValueError(
+                    "reliable-receive mode is only supported on H2"
+                )
+
+            run_reliable_receiver(
+                sock=sock,
+                host_ip=host_ip,
+                gateway_name=gateway_name,
+                gateway_ip=gateway_ip,
+                gateway_port=gateway_port,
+                expected_sender_ip=nodes["H1"]["virtual_ip"],
             )
-        elif host_name == "H1":
-            run_probe_client(
-                sock, host_name, host_ip, gateway_name,
-                gateway_ip, gateway_port
+
+        elif mode == "reliable-send":
+            if host_name != "H1":
+                raise ValueError(
+                    "reliable-send mode is only supported on H1"
+                )
+
+            if not messages:
+                raise ValueError(
+                    "Reliable sender requires at least one message"
+                )
+
+            result = run_reliable_sender(
+                sock=sock,
+                host_ip=host_ip,
+                gateway_name=gateway_name,
+                gateway_port=gateway_port,
+                destination_ip=nodes["H2"]["virtual_ip"],
+                messages=messages,
             )
+
+            if not result["success"]:
+                log_event(
+                    host_name,
+                    "RELIABLE_SEND_FAILED",
+                    transfer_id=result["transfer_id"],
+                    failed_seq=result["failed_seq"],
+                    retransmissions=result["retransmissions"],
+                )
+            else:
+                log_event(
+                    host_name,
+                    "RELIABLE_SEND_SUCCESS",
+                    transfer_id=result["transfer_id"],
+                    message_count=result["message_count"],
+                    retransmissions=result["retransmissions"],
+                )
+
         else:
-            raise ValueError(
-                f"No host application behavior defined for {host_name}"
-            )
+            raise ValueError(f"Unknown host mode: {mode}")
 
 
 def run_echo_server(
@@ -156,8 +218,6 @@ def run_echo_server(
             )
             continue
 
-        # The echo is a new packet addressed to the original source.
-        # Send it to H2's configured gateway, not directly to H1.
         try:
             echo = encode_packet(
                 src_ip=host_ip,
@@ -192,7 +252,7 @@ def run_echo_server(
 def run_probe_client(
     sock, host_name, host_ip, gateway_name, gateway_ip, gateway_port
 ):
-    """Send one probe and wait for its matching echo."""
+    """Send a probe and detect matching echoes that arrive after timeout."""
     time.sleep(0.3)
 
     msg_id = int(time.time() * 1000) % 4294967296
@@ -207,8 +267,6 @@ def run_probe_client(
         payload_str=payload
     )
 
-    sock.settimeout(PROBE_TIMEOUT_SECONDS)
-
     log_event(
         host_name,
         "SEND_PROBE",
@@ -220,43 +278,31 @@ def run_probe_client(
     )
 
     sock.sendto(probe, ("127.0.0.1", gateway_port))
+    probe_sent_at = time.monotonic()
+    deadline = probe_sent_at + PROBE_TIMEOUT_SECONDS
 
-    deadline = time.monotonic() + PROBE_TIMEOUT_SECONDS
-
+    # Wait for an on-time matching echo.
     while True:
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            log_event(
-                host_name, "TIMEOUT",
-                msg_id=msg_id,
-                reason="no_matching_echo_received"
-            )
-            return
+            break
 
         sock.settimeout(remaining)
 
         try:
             data, source_endpoint = sock.recvfrom(RECEIVE_BUFFER_SIZE)
         except socket.timeout:
-            log_event(
-                host_name, "TIMEOUT",
-                msg_id=msg_id,
-                reason="no_matching_echo_received"
-            )
-            return
+            break
 
         response = decode_packet(data)
 
         if response is None:
-            log_event(
-                host_name, "DROP",
-                reason="malformed_or_oversized_response"
-            )
+            log_event(host_name, "DROP",
+                      reason="malformed_or_oversized_response")
             continue
 
         log_event(
-            host_name,
-            "RECEIVE",
+            host_name, "RECEIVE",
             msg_id=response["msg_id"],
             msg_type=response["msg_type"],
             src_ip=response["src_ip"],
@@ -273,34 +319,134 @@ def run_probe_client(
             and response["payload"] == payload
         ):
             log_event(
-                host_name,
-                "SUCCESS",
+                host_name, "SUCCESS",
                 result="matching_echo_received",
-                msg_id=msg_id
+                msg_id=msg_id,
+                elapsed_seconds=round(time.monotonic() - probe_sent_at, 6)
             )
             print("SUCCESS: Matching ECHO received.", flush=True)
             return
 
         log_event(
-            host_name,
-            "IGNORE",
+            host_name, "IGNORE",
             reason="response_did_not_match_probe",
             expected_msg_id=msg_id,
             received_msg_id=response["msg_id"]
         )
 
+    # Original probe timeout has expired.
+    log_event(
+        host_name, "TIMEOUT",
+        msg_id=msg_id,
+        reason="no_matching_echo_received"
+    )
 
-if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        print("Usage: python host.py HOST_NAME")
-        print("Examples: python host.py H1")
-        print("          python host.py H2")
+    grace_deadline = time.monotonic() + LATE_RESPONSE_GRACE_SECONDS
+
+    # Listen for a matching echo during the additional grace period.
+    while True:
+        remaining = grace_deadline - time.monotonic()
+        if remaining <= 0:
+            log_event(
+                host_name, "LATE_RESPONSE_WINDOW_CLOSED",
+                msg_id=msg_id,
+                grace_seconds=LATE_RESPONSE_GRACE_SECONDS
+            )
+            return
+
+        sock.settimeout(remaining)
+
+        try:
+            data, source_endpoint = sock.recvfrom(RECEIVE_BUFFER_SIZE)
+        except socket.timeout:
+            log_event(
+                host_name, "LATE_RESPONSE_WINDOW_CLOSED",
+                msg_id=msg_id,
+                grace_seconds=LATE_RESPONSE_GRACE_SECONDS
+            )
+            return
+
+        response = decode_packet(data)
+
+        if response is None:
+            log_event(
+                host_name, "DROP",
+                reason="malformed_or_oversized_response",
+                phase="late_response_grace"
+            )
+            continue
+
+        log_event(
+            host_name, "RECEIVE",
+            msg_id=response["msg_id"],
+            msg_type=response["msg_type"],
+            src_ip=response["src_ip"],
+            dst_ip=response["dst_ip"],
+            hop_limit=response["hop_limit"],
+            udp_source=f"{source_endpoint[0]}:{source_endpoint[1]}",
+            phase="late_response_grace"
+        )
+
+        if (
+            response["msg_type"] == "ECHO"
+            and response["src_ip"] == "10.0.0.6"
+            and response["dst_ip"] == host_ip
+            and response["msg_id"] == msg_id
+            and response["payload"] == payload
+        ):
+            log_event(
+                host_name, "LATE_RESPONSE",
+                msg_id=msg_id,
+                result="matching_echo_received_after_timeout",
+                elapsed_seconds=round(time.monotonic() - probe_sent_at, 6),
+                grace_seconds=LATE_RESPONSE_GRACE_SECONDS
+            )
+            print("LATE_RESPONSE: Matching ECHO arrived after timeout.", flush=True)
+            return
+
+        log_event(
+            host_name, "IGNORE",
+            reason="response_did_not_match_probe",
+            expected_msg_id=msg_id,
+            received_msg_id=response["msg_id"],
+            phase="late_response_grace"
+        )
+
+
+
+def main():
+    if len(sys.argv) < 2:
+        print("Usage:")
+        print("  python host.py H1")
+        print("  python host.py H2")
+        print('  python host.py H2 reliable-receive')
+        print('  python host.py H1 reliable-send "Message 1" "Message 2"')
+        sys.exit(1)
+
+    host_name = sys.argv[1]
+
+    if len(sys.argv) == 2:
+        mode = "baseline"
+        messages = None
+
+    elif len(sys.argv) >= 3:
+        mode = sys.argv[2]
+        messages = sys.argv[3:] if mode == "reliable-send" else None
+
+    else:
+        print("Invalid arguments.")
         sys.exit(1)
 
     try:
-        run_host(sys.argv[1])
+        run_host(host_name, mode, messages)
+
     except KeyboardInterrupt:
         print("\nHost stopped.")
+
     except (RuntimeError, ValueError, OSError) as error:
         print(f"Host startup/runtime error: {error}")
         sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,9 @@
+protocol,delay_ms,loss_probability,repetitions,mean_delivery_fraction,mean_unique_delivered,complete_transfer_count,mean_retransmissions,mean_sender_elapsed_seconds,mean_delivery_elapsed_seconds,successful_delivery_timing_count,failed_transfer_count,mean_simulated_router_drops
+best_effort,5,0.0,3,1.0,20.0,3,0.0,5.701049,5.746462,3,0,0.0
+best_effort,5,0.05,3,0.966667,19.333,2,0.0,5.701277,5.743863,2,1,0.667
+best_effort,25,0.0,3,1.0,20.0,3,0.0,5.701045,5.765108,3,0,0.0
+best_effort,25,0.05,3,0.933333,18.667,0,0.0,5.701359,,0,3,1.333
+reliable,5,0.0,3,1.0,20.0,3,0.0,1.953141,1.903613,3,0,0.0
+reliable,5,0.05,3,1.0,20.0,3,1.333,2.634019,2.584815,3,0,1.333
+reliable,25,0.0,3,1.0,20.0,3,0.0,2.60734,2.542343,3,0,0.0
+reliable,25,0.05,3,1.0,20.0,3,4.0,4.626947,4.561626,3,0,4.0

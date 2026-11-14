@@ -1,0 +1,2 @@
+{"timestamp": "2026-11-06T04:55:35.860536+00:00", "run_id": "c815a1cd-5e2a-4a2e-bd69-4e071b126efd", "device": "R_C", "event": "START", "seed": 13403, "message": "R_C starting"}
+{"timestamp": "2026-11-06T04:55:35.860742+00:00", "run_id": "c815a1cd-5e2a-4a2e-bd69-4e071b126efd", "device": "R_C", "event": "LISTEN", "virtual_ip": "10.0.0.4", "udp_endpoint": "127.0.0.1:5004", "seed": 13403, "drop_first_data": false, "drop_final_ack": false}
