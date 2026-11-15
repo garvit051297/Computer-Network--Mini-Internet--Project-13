@@ -1,0 +1,3 @@
+{"timestamp": "2026-11-08T03:50:39.368038+00:00", "device": "H2", "event": "LISTEN", "virtual_ip": "10.0.0.6", "udp_endpoint": "127.0.0.1:5006", "default_gateway": "R_D", "mode": "reliable-receive"}
+{"timestamp": "2026-11-08T03:50:39.369250+00:00", "device": "H2", "event": "RELIABLE_RECEIVER_READY", "virtual_ip": "10.0.0.6", "expected_sender_ip": "10.0.0.1", "grace_seconds": 15.0}
+{"timestamp": "2026-11-08T03:50:54.376148+00:00", "device": "H2", "event": "RECEIVER_SHUTDOWN", "reason": "grace_period_expired", "completed_transfer_count": 0}

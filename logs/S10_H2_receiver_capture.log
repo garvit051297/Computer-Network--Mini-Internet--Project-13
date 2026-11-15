@@ -1,0 +1,6 @@
+{"timestamp": "2026-11-08T03:53:34.558956+00:00", "device": "H2", "event": "LISTEN", "virtual_ip": "10.0.0.6", "udp_endpoint": "127.0.0.1:5006", "default_gateway": "R_D", "mode": "reliable-receive"}
+{"timestamp": "2026-11-08T03:53:34.560427+00:00", "device": "H2", "event": "RELIABLE_RECEIVER_READY", "virtual_ip": "10.0.0.6", "expected_sender_ip": "10.0.0.1", "grace_seconds": 15.0}
+{"timestamp": "2026-11-08T03:53:37.143119+00:00", "device": "H2", "event": "DELIVER_DATA", "transfer_id": "26e932be135d41d4ae05301b147c7a64", "seq": 0, "msg_id": 1516922229, "data": "S10 Track B retransmission capture demonstration", "is_last": true}
+{"timestamp": "2026-11-08T03:53:37.144104+00:00", "device": "H2", "event": "SEND_ACK", "transfer_id": "26e932be135d41d4ae05301b147c7a64", "seq": 0, "msg_id": 1516922229, "next_hop": "R_D", "udp_destination": "127.0.0.1:5005"}
+{"timestamp": "2026-11-08T03:53:37.144472+00:00", "device": "H2", "event": "TRANSFER_RECEIVED_COMPLETE", "transfer_id": "26e932be135d41d4ae05301b147c7a64", "final_seq": 0, "grace_seconds": 15.0}
+{"timestamp": "2026-11-08T03:53:52.150336+00:00", "device": "H2", "event": "RECEIVER_SHUTDOWN", "reason": "grace_period_expired", "completed_transfer_count": 1}

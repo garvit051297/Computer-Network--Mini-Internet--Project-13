@@ -133,8 +133,14 @@ def get_link_settings(config, node_a, node_b):
     raise ValueError(f"No configured link between {node_a} and {node_b}")
 
 
-def run_router(router_name, seed=None):
-    """Run a router, optionally using a reproducible random seed."""
+def run_router(
+    router_name,
+    seed=None,
+    drop_first_data=False,
+    drop_final_ack=False,
+    corrupt_first_data=False
+):
+    """Run a router with optional deterministic packet test hooks."""
     if seed is not None:
         random.seed(seed)
 
@@ -158,11 +164,21 @@ def run_router(router_name, seed=None):
     run_id = str(uuid.uuid4())
     logger = setup_logger(router_name, run_id, seed=seed)
 
+    # The final DATA packet identifies the final sequence number.
+    final_sequences = {}
+    dropped_final_ack = False
+
+    # Track whether the intentional corruption has already occurred.
+    corrupted_first_data = False
+
     log_event(
         logger, run_id, router_name, "LISTEN",
         virtual_ip=router_ip,
         udp_endpoint=f"127.0.0.1:{router_port}",
-        seed=seed
+        seed=seed,
+        drop_first_data=drop_first_data,
+        drop_final_ack=drop_final_ack,
+        corrupt_first_data=corrupt_first_data
     )
 
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -171,7 +187,6 @@ def run_router(router_name, seed=None):
         while True:
             data, source_endpoint = sock.recvfrom(RECEIVE_BUFFER_SIZE)
 
-            # Decode and reject malformed or oversized packets.
             packet = decode_packet(data)
             if packet is None:
                 log_event(
@@ -186,6 +201,7 @@ def run_router(router_name, seed=None):
             msg_id = packet["msg_id"]
             msg_type = packet["msg_type"]
             hop_limit = packet["hop_limit"]
+            payload = packet["payload"]
 
             common = {
                 "msg_id": msg_id,
@@ -193,17 +209,11 @@ def run_router(router_name, seed=None):
                 "src_ip": src_ip,
                 "dst_ip": dst_ip,
                 "hop_limit": hop_limit,
-                "udp_source": (
-                    f"{source_endpoint[0]}:{source_endpoint[1]}"
-                )
+                "udp_source": f"{source_endpoint[0]}:{source_endpoint[1]}"
             }
 
-            log_event(
-                logger, run_id, router_name, "RECEIVE",
-                **common
-            )
+            log_event(logger, run_id, router_name, "RECEIVE", **common)
 
-            # A router does not act as a host application.
             if dst_ip == router_ip:
                 log_event(
                     logger, run_id, router_name, "LOCAL_DESTINATION",
@@ -211,7 +221,6 @@ def run_router(router_name, seed=None):
                 )
                 continue
 
-            # Find the next-hop neighbor using the destination virtual IP.
             next_hop = forwarding_table.get(dst_ip)
 
             if next_hop is None:
@@ -240,7 +249,6 @@ def run_router(router_name, seed=None):
                 )
                 continue
 
-            # Do not forward a packet whose hop limit is exhausted.
             if hop_limit <= 1:
                 log_event(
                     logger, run_id, router_name, "DROP",
@@ -250,7 +258,6 @@ def run_router(router_name, seed=None):
                 )
                 continue
 
-            # Read the settings for this specific link.
             try:
                 delay_ms, loss_prob = get_link_settings(
                     config, router_name, next_hop
@@ -265,7 +272,80 @@ def run_router(router_name, seed=None):
                 )
                 continue
 
-            # Simulate packet loss according to the configured probability.
+            # Existing deterministic DATA-loss test.
+            if (
+                drop_first_data
+                and router_name == "R_B"
+                and src_ip == "10.0.0.1"
+                and dst_ip == "10.0.0.6"
+                and msg_type == "DATA"
+            ):
+                log_event(
+                    logger, run_id, router_name, "DROP",
+                    reason="intentional_test_drop",
+                    next_hop=next_hop,
+                    test="drop_first_h1_to_h2_data",
+                    **common
+                )
+                drop_first_data = False
+                continue
+
+            # Learn the final sequence number from the final DATA payload.
+            if (
+                router_name == "R_B"
+                and src_ip == "10.0.0.1"
+                and dst_ip == "10.0.0.6"
+                and msg_type == "DATA"
+            ):
+                try:
+                    message = json.loads(payload)
+                    if (
+                        isinstance(message, dict)
+                        and message.get("is_last") is True
+                        and isinstance(message.get("seq"), int)
+                        and not isinstance(message.get("seq"), bool)
+                    ):
+                        transfer_id = message.get("transfer_id")
+                        if isinstance(transfer_id, str):
+                            final_sequences[transfer_id] = message["seq"]
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+            # Drop the first matching ACK for the learned final DATA sequence.
+            if (
+                drop_final_ack
+                and not dropped_final_ack
+                and router_name == "R_B"
+                and src_ip == "10.0.0.6"
+                and dst_ip == "10.0.0.1"
+                and msg_type == "ACK"
+            ):
+                try:
+                    ack = json.loads(payload)
+                    transfer_id = ack.get("transfer_id")
+                    ack_seq = ack.get("seq")
+
+                    if (
+                        isinstance(ack, dict)
+                        and isinstance(transfer_id, str)
+                        and isinstance(ack_seq, int)
+                        and not isinstance(ack_seq, bool)
+                        and final_sequences.get(transfer_id) == ack_seq
+                    ):
+                        log_event(
+                            logger, run_id, router_name, "DROP",
+                            reason="intentional_final_ack_drop",
+                            test="drop_first_final_ack",
+                            transfer_id=transfer_id,
+                            seq=ack_seq,
+                            next_hop=next_hop,
+                            **common
+                        )
+                        dropped_final_ack = True
+                        continue
+                except (json.JSONDecodeError, AttributeError, TypeError):
+                    pass
+
             if random.random() < loss_prob:
                 log_event(
                     logger, run_id, router_name, "DROP",
@@ -277,11 +357,65 @@ def run_router(router_name, seed=None):
                 )
                 continue
 
-            # Resolve the neighbor's configured UDP endpoint.
+            # Bonus test: intentionally corrupt the first matching DATA packet.
+            # The CRC-32 field is deliberately left unchanged.
+            if (
+                corrupt_first_data
+                and not corrupted_first_data
+                and router_name == "R_B"
+                and src_ip == "10.0.0.1"
+                and dst_ip == "10.0.0.6"
+                and msg_type == "DATA"
+            ):
+                try:
+                    message = json.loads(payload)
+
+                    if (
+                        isinstance(message, dict)
+                        and isinstance(message.get("data"), str)
+                        and isinstance(message.get("crc32"), str)
+                    ):
+                        original_data = message["data"]
+
+                        if original_data:
+                            message["data"] = "X" + original_data[1:]
+                        else:
+                            message["data"] = "X"
+
+                        # Preserve the original checksum to simulate corruption.
+                        original_checksum = message["crc32"]
+
+                        payload = json.dumps(
+                            message,
+                            ensure_ascii=False,
+                            separators=(",", ":")
+                        )
+
+                        log_event(
+                            logger, run_id, router_name, "CORRUPT",
+                            reason="intentional_crc32_test_corruption",
+                            test="corrupt_first_h1_to_h2_data",
+                            transfer_id=message.get("transfer_id"),
+                            seq=message.get("seq"),
+                            original_crc32=original_checksum,
+                            checksum_modified=False,
+                            next_hop=next_hop,
+                            **common
+                        )
+
+                        corrupted_first_data = True
+
+                except (json.JSONDecodeError, TypeError, ValueError) as error:
+                    log_event(
+                        logger, run_id, router_name, "CORRUPTION_TEST_ERROR",
+                        reason="could_not_corrupt_data_payload",
+                        error=str(error),
+                        **common
+                    )
+
             neighbor = nodes[next_hop]
             next_endpoint = ("127.0.0.1", neighbor["udp_port"])
 
-            # Re-encode the packet with the hop limit decremented.
             try:
                 outgoing = encode_packet(
                     src_ip=src_ip,
@@ -289,7 +423,7 @@ def run_router(router_name, seed=None):
                     hop_limit=hop_limit - 1,
                     msg_type=msg_type,
                     msg_id=msg_id,
-                    payload_str=packet["payload"]
+                    payload_str=payload
                 )
             except (ValueError, TypeError) as error:
                 log_event(
@@ -300,7 +434,6 @@ def run_router(router_name, seed=None):
                 )
                 continue
 
-            # Schedule the send so the router can keep receiving packets.
             def forward_packet(
                 outgoing=outgoing,
                 next_endpoint=next_endpoint,
@@ -357,16 +490,48 @@ def run_router(router_name, seed=None):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in (2, 4) or (
-        len(sys.argv) == 4 and sys.argv[2] != "--seed"
+    args = sys.argv[1:]
+
+    drop_first_data = False
+    drop_final_ack = False
+    corrupt_first_data = False
+    seed = None
+
+    # Accept all deterministic test flags in either order.
+    remaining_args = []
+    for arg in args:
+        if arg == "--drop-first-data":
+            drop_first_data = True
+        elif arg == "--drop-final-ack":
+            drop_final_ack = True
+        elif arg == "--corrupt-first-data":
+            corrupt_first_data = True
+        else:
+            remaining_args.append(arg)
+    args = remaining_args
+
+    if len(args) not in (1, 3) or (
+        len(args) == 3 and args[1] != "--seed"
     ):
-        print("Usage: python router.py ROUTER_NAME [--seed INTEGER]")
-        print("Example: python router.py R_A --seed 101")
+        print(
+            "Usage: python router.py ROUTER_NAME "
+            "[--seed INTEGER] [--drop-first-data] "
+            "[--drop-final-ack] [--corrupt-first-data]"
+        )
+        print("Example: python router.py R_B --corrupt-first-data")
         sys.exit(1)
 
     try:
-        seed = int(sys.argv[3]) if len(sys.argv) == 4 else None
-        run_router(sys.argv[1], seed=seed)
+        seed = int(args[2]) if len(args) == 3 else None
+
+        run_router(
+            args[0],
+            seed=seed,
+            drop_first_data=drop_first_data,
+            drop_final_ack=drop_final_ack,
+            corrupt_first_data=corrupt_first_data
+        )
+
     except KeyboardInterrupt:
         print("\nRouter stopped.")
     except (RuntimeError, ValueError, OSError) as error:

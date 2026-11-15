@@ -1,0 +1,5 @@
+delay_ms_on_RB_RD,loss_probability_on_RB_RD,repetitions,total_probes,total_successes,total_timeouts,mean_delivery_fraction,successful_runs_with_rtt,mean_run_rtt_ms,stdev_run_rtt_ms,range_run_rtt_ms
+5,0.0,3,60,60,0,1.0,3,97.271,1.808,3.21
+5,0.05,3,60,58,2,0.9667,3,98.454,0.217,0.427
+25,0.0,3,60,60,0,1.0,3,130.434,0.7,1.26
+25,0.05,3,60,52,8,0.8667,3,130.248,0.302,0.594
